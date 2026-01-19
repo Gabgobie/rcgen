@@ -714,9 +714,6 @@ impl CertificatePolicies {
 		write_x509_extension(writer, oid::CERTIFICATE_POLICIES, self.critical, |writer| {
 			writer.write_sequence_of(|writer| {
 				for policy in &self.policy_information {
-					// writer.next().write_der(&yasna::encode_der(policy))
-
-					// Unwrapped equivalent to the above trait use
 					writer
 						.next()
 						.write_der(&yasna::construct_der(|writer| policy.encode_der(writer)))
@@ -873,7 +870,7 @@ impl PolicyInformation {
 	fn from_x509(value: x509_parser::extensions::PolicyInformation) -> Result<Self, Error> {
 		let mut policy_identifier = Vec::new();
 
-		// Contributor question: What error should be returned here? Is this something that can happen?
+		// Contributor question: What error should be returned here?
 		for v in value.policy_id.iter().ok_or(Error::X509(String::from(
 			"PolicyInformation without a policy_identifier is invalid",
 		)))? {
@@ -937,15 +934,6 @@ impl PolicyQualifierInfo {
 }
 
 impl PolicyQualifierInfo {
-	// This seems like a sensible method but I don't think we can expose this trait bound.
-	// /// Create a custom [`PolicyQualifierInfo`] from an OID and any [`yasna::DEREncodable`] object.
-	// pub fn new_custom<Q: yasna::DEREncodable>(policy_qualifier_id: Vec<u64>, qualifier: Q) -> Self {
-	// 	Self {
-	// 		policy_qualifier_id,
-	// 		qualifier: yasna::encode_der(&qualifier),
-	// 	}
-	// }
-
 	/// Create a custom [`PolicyQualifierInfo`]
 	///
 	/// It is your responsibility to provide valid DER for the qualifier.
@@ -1045,7 +1033,7 @@ impl UserNotice {
 				organization,
 				notice_numbers,
 			}),
-			explicit_text: Some(DisplayText::Utf8String(msg)), // MSG is defined as DisplayText but RECOMMENDED to be UTF8String. Should we expose all options including those that are discouraged?
+			explicit_text: Some(DisplayText::Utf8String(msg)),
 		}
 	}
 
@@ -1073,9 +1061,6 @@ impl UserNotice {
 				writer.next().write_der(&encode_der(notice_ref));
 			}
 			if let Some(explicit_text) = &self.explicit_text {
-				// writer.next().write_der(&encode_der(explicit_text));
-
-				// Unwrapped equivalent to the above trait use
 				writer.next().write_der(&yasna::construct_der(|writer| {
 					explicit_text.encode_der(writer);
 				}))
@@ -1098,16 +1083,13 @@ struct NoticeReference {
 	notice_numbers: NoticeNumbers,
 }
 
-// NoticeRef is private. Should I still remove the Trait impl?
+// NoticeRef is private so we can impl DEREncodable
 impl yasna::DEREncodable for NoticeReference {
 	fn encode_der<'a>(&self, writer: DERWriter<'a>) {
 		writer.write_sequence(|writer| {
-			// writer.next().write_der(&encode_der(&self.organization));
 			writer.next().write_der(&yasna::construct_der(|writer| {
 				self.organization.encode_der(writer);
 			}));
-			// This is incorrect
-			// writer.next().write_der(&self.notice_numbers);
 			writer.next().write_sequence_of(|writer| {
 				for val in &self.notice_numbers {
 					writer.next().write_i64(*val);
@@ -1136,10 +1118,7 @@ pub enum DisplayText {
 	/// Usually what you want
 	Utf8String(String),
 	// Contributor question:
-	// Should we make non-conformant options available at all?
-
-	// VisibleString(string::VisibleString), // Not implemented yet. Could be imported/inspired from x509_parser
-	// BmpString(string::BmpString),
+	// Should we make non-conformant/not recommended options available at all?
 }
 
 impl From<&str> for DisplayText {
@@ -1160,12 +1139,6 @@ impl DisplayText {
 		match self {
 			DisplayText::Ia5String(string) => writer.write_ia5_string(string.as_str()),
 			DisplayText::Utf8String(string) => writer.write_utf8_string(string.as_str()),
-			// DisplayText::BmpString(string) => {
-			//	// [`writer.write_bmp_string`] expects [`&str`].
-			//	// Would I use write_bytes for this?
-			// 	let bytes = string.as_bytes();
-			// 	writer.write_bitvec_bytes(bytes, bytes.len())
-			// },
 		}
 	}
 }
@@ -1209,14 +1182,6 @@ impl InhibitAnyPolicy {
 	}
 }
 
-// #[cfg(feature = "x509-parser")]
-// impl From<x509_parser::extensions::InhibitAnyPolicy> for InhibitAnyPolicy {
-// 	fn from(value: x509_parser::extensions::InhibitAnyPolicy) -> Self {
-// 		Self {
-// 			skip_certs: value.skip_certs
-// 		}
-// 	}
-// }
 #[cfg(all(test, feature = "x509-parser"))]
 impl InhibitAnyPolicy {
 	fn from_x509(
