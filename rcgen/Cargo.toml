@@ -32,10 +32,6 @@ zeroize = { workspace = true, optional = true }
 openssl = { workspace = true }
 
 [[example]]
-name = "certificate_policies"
-required-features = ["pem"]
-
-[[example]]
 name = "rsa-irc-openssl"
 required-features = ["pem"]
 
