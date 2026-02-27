@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::str::FromStr;
 
@@ -61,6 +62,7 @@ pub struct CertificateParams {
 	pub distinguished_name: DistinguishedName,
 	pub is_ca: IsCa,
 	pub key_usages: Vec<KeyUsagePurpose>,
+	pub certificate_policies: Option<CertificatePolicies>,
 	pub inhibit_any_policy: Option<InhibitAnyPolicy>,
 	pub extended_key_usages: Vec<ExtendedKeyUsagePurpose>,
 	pub name_constraints: Option<NameConstraints>,
@@ -94,6 +96,7 @@ impl Default for CertificateParams {
 			distinguished_name,
 			is_ca: IsCa::NoCa,
 			key_usages: Vec::new(),
+			certificate_policies: None,
 			inhibit_any_policy: None,
 			extended_key_usages: Vec::new(),
 			name_constraints: None,
@@ -183,6 +186,7 @@ impl CertificateParams {
 			distinguished_name: DistinguishedName::from_name(&x509.tbs_certificate.subject)?,
 			not_before: x509.validity().not_before.to_datetime(),
 			not_after: x509.validity().not_after.to_datetime(),
+			certificate_policies: CertificatePolicies::from_x509(&x509)?,
 			inhibit_any_policy: InhibitAnyPolicy::from_x509(&x509)?,
 			..Default::default()
 		})
@@ -333,6 +337,7 @@ impl CertificateParams {
 			distinguished_name,
 			is_ca,
 			key_usages,
+			certificate_policies,
 			inhibit_any_policy,
 			extended_key_usages,
 			name_constraints,
@@ -357,6 +362,7 @@ impl CertificateParams {
 		if serial_number.is_some()
 			|| *is_ca != IsCa::NoCa
 			|| name_constraints.is_some()
+			|| certificate_policies.is_some()
 			|| inhibit_any_policy.is_some()
 			|| !crl_distribution_points.is_empty()
 			|| *use_authority_key_identifier_extension
@@ -457,6 +463,7 @@ impl CertificateParams {
 				|| self.name_constraints.iter().any(|c| !c.is_empty())
 				|| matches!(self.is_ca, IsCa::ExplicitNoCa)
 				|| matches!(self.is_ca, IsCa::Ca(_))
+				|| self.certificate_policies.is_some()
 				|| self.inhibit_any_policy.is_some()
 				|| !self.custom_extensions.is_empty();
 			if !should_write_exts {
@@ -590,6 +597,12 @@ impl CertificateParams {
 			IsCa::NoCa => {},
 		}
 
+		if let Some(certificate_policies) = &self.certificate_policies {
+			writer.next().write_der(&yasna::construct_der(|writer| {
+				certificate_policies.encode_der(writer);
+			}))
+		}
+
 		if let Some(inhibit_any_policy) = &self.inhibit_any_policy {
 			writer.next().write_der(&yasna::construct_der(|writer| {
 				inhibit_any_policy.encode_der(writer)
@@ -645,6 +658,238 @@ fn write_general_subtrees(writer: DERWriter, tag: u64, general_subtrees: &[Gener
 			}
 		});
 	});
+}
+
+/// The [Certificate Policies extension](https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.4)
+///
+/// This qualifier SHOULD only be present in end entity certificates and CA certificates issued to other organizations
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CertificatePolicies {
+	/// Applications with specific policy requirements are expected to have a list of those policies
+	/// that they will accept and to compare the policy OIDs in the certificate to that list. If this
+	/// extension is critical, the path validation software MUST be able to interpret this extension
+	/// (including the optional qualifier), or MUST reject the certificate.
+	critical: bool,
+	/// A sequence of one or more policy information terms
+	///
+	/// A certificate policy OID MUST NOT appear more than once in a
+	/// certificate policies extension.
+	policy_information: Vec<PolicyInformation>,
+}
+
+impl CertificatePolicies {
+	#[cfg(all(test, feature = "x509-parser"))]
+	fn from_x509(
+		x509: &x509_parser::certificate::X509Certificate<'_>,
+	) -> Result<Option<Self>, Error> {
+		use x509_parser::extensions::ParsedExtension;
+		use x509_parser::oid_registry::OID_X509_EXT_CERTIFICATE_POLICIES;
+
+		let ext = x509
+			.get_extension_unique(&OID_X509_EXT_CERTIFICATE_POLICIES)
+			.map_err(|_| Error::CouldNotParseCertificate)?;
+
+		let Some(ext) = ext else {
+			return Ok(None);
+		};
+
+		let ParsedExtension::CertificatePolicies(policies) = ext.parsed_extension() else {
+			return Err(Error::X509("A CertificatePolicies extension was found by OID but not parsed into the expected type.".to_string()));
+		};
+
+		let mut policy_information: Vec<PolicyInformation> = Vec::with_capacity(policies.len());
+		for policy in policies.iter().cloned() {
+			policy_information.push(PolicyInformation::from_x509(policy)?);
+		}
+
+		Ok(Some(Self {
+			critical: ext.critical,
+			policy_information,
+		}))
+	}
+}
+
+// impl yasna::DEREncodable for CertificatePolicies {
+impl CertificatePolicies {
+	fn encode_der<'a>(&self, writer: DERWriter<'a>) {
+		write_x509_extension(writer, oid::CERTIFICATE_POLICIES, self.critical, |writer| {
+			writer.write_sequence_of(|writer| {
+				for policy in &self.policy_information {
+					writer
+						.next()
+						.write_der(&yasna::construct_der(|writer| policy.encode_der(writer)))
+				}
+			})
+		});
+	}
+}
+
+impl CertificatePolicies {
+	/// Create a new [`CertificatePolicies`] extension.
+	/// Returns [`None`] when `policies` is empty and [`Error::DuplicatePolicyInformation`] when policies are not unique
+	pub fn new(criticality: bool, policies: Vec<PolicyInformation>) -> Result<Option<Self>, Error> {
+		if policies.is_empty() {
+			return Ok(None);
+		}
+
+		let mut unique_ids: HashSet<&[u64]> = HashSet::with_capacity(policies.len());
+		for policy in &policies {
+			if !unique_ids.insert(&policy.policy_identifier) {
+				return Err(Error::DuplicatePolicyInformation(
+					policy.policy_identifier.clone(),
+				));
+			}
+		}
+
+		Ok(Some(Self {
+			critical: criticality,
+			policy_information: policies,
+		}))
+	}
+}
+
+/// > A certificate policy OID MUST NOT appear more than once in a
+/// > certificate policies extension.
+/// >
+/// > In an end entity certificate, these policy information terms indicate
+/// > the policy under which the certificate has been issued and the
+/// > purposes for which the certificate may be used.  In a CA certificate,
+/// > these policy information terms limit the set of policies for
+/// > certification paths that include this certificate.  When a CA does
+/// > not wish to limit the set of policies for certification paths that
+/// > include this certificate, it MAY assert the special policy anyPolicy,
+/// > with a value of { 2 5 29 32 0 }.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct PolicyInformation {
+	policy_identifier: Vec<u64>,
+	policy_qualifiers: Option<Vec<PolicyQualifierInfo>>,
+}
+
+// impl yasna::DEREncodable for PolicyInformation {
+impl PolicyInformation {
+	fn encode_der<'a>(&self, writer: DERWriter<'a>) {
+		writer.write_sequence(|writer| {
+			writer
+				.next()
+				.write_oid(&ObjectIdentifier::from_slice(&self.policy_identifier));
+
+			let Some(policy_qualifiers) = &self.policy_qualifiers else {
+				return;
+			};
+
+			writer.next().write_sequence_of(|writer| {
+				for policy_qualifier in policy_qualifiers {
+					writer.next().write_der(&yasna::construct_der(|writer| {
+						policy_qualifier.encode_der(writer)
+					}))
+				}
+			})
+		})
+	}
+}
+
+impl PolicyInformation {
+	/// > To promote interoperability, this profile RECOMMENDS that policy information terms consist of only an OID.
+	pub fn new_oid_only(oid: Vec<u64>) -> Self {
+		Self {
+			policy_identifier: oid,
+			policy_qualifiers: None,
+		}
+	}
+
+	/// Consider using [`Self::new_oid_only`] instead if possible.
+	///
+	/// > To promote interoperability, this profile RECOMMENDS that policy
+	/// > information terms consist of only an OID.  Where an OID alone is
+	/// > insufficient, this profile strongly recommends that the use of
+	/// > qualifiers be limited to those identified in this section.  When
+	/// > qualifiers are used with the special policy anyPolicy, they MUST be
+	/// > limited to the qualifiers identified in this section.  Only those
+	/// > qualifiers returned as a result of path validation are considered.
+	pub fn new_oid_qualifiers(oid: Vec<u64>, qualifiers: Vec<PolicyQualifierInfo>) -> Self {
+		Self {
+			policy_identifier: oid,
+			policy_qualifiers: Some(qualifiers),
+		}
+	}
+}
+
+#[cfg(all(test, feature = "x509-parser"))]
+impl PolicyInformation {
+	fn from_x509(value: x509_parser::extensions::PolicyInformation) -> Result<Self, Error> {
+		let mut policy_identifier = Vec::new();
+
+		for v in value.policy_id.iter().ok_or(Error::X509(String::from(
+			"PolicyInformation without a policy_identifier is invalid",
+		)))? {
+			policy_identifier.push(v);
+		}
+
+		let Some(qualifiers) = value.policy_qualifiers else {
+			return Ok(Self {
+				policy_identifier,
+				policy_qualifiers: None,
+			});
+		};
+		let policy_qualifiers = qualifiers
+			.into_iter()
+			.map(PolicyQualifierInfo::from_x509)
+			.collect::<Result<Vec<PolicyQualifierInfo>, Error>>()?;
+
+		Ok(Self {
+			policy_identifier,
+			policy_qualifiers: Some(policy_qualifiers),
+		})
+	}
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+/// RFC5280 strongly recommends that no custom qualifiers are used.
+///
+/// ```ASN.1
+/// PolicyQualifierInfo ::= SEQUENCE {
+///         policyQualifierId  PolicyQualifierId,
+///         qualifier          ANY DEFINED BY policyQualifierId }
+/// ```
+pub struct PolicyQualifierInfo {
+	/// The OID of your [`PolicyQualifierInfo`]
+	pub policy_qualifier_id: Vec<u64>,
+	/// The DER encoded qualifier
+	///
+	/// > ANY DEFINED BY policyQualifierId
+	pub qualifier: Vec<u8>,
+}
+
+#[cfg(all(test, feature = "x509-parser"))]
+impl PolicyQualifierInfo {
+	fn from_x509(value: x509_parser::extensions::PolicyQualifierInfo<'_>) -> Result<Self, Error> {
+		let mut oid = Vec::new();
+		for arc in value
+			.policy_qualifier_id
+			.iter()
+			.ok_or(Error::X509(String::from(
+				"PolicyInformation without a policy_identifier is invalid",
+			)))? {
+			oid.push(arc);
+		}
+
+		Ok(Self {
+			policy_qualifier_id: oid,
+			qualifier: value.qualifier.to_owned(),
+		})
+	}
+}
+
+// impl yasna::DEREncodable for PolicyQualifierInfo {
+impl PolicyQualifierInfo {
+	fn encode_der<'a>(&self, writer: DERWriter<'a>) {
+		writer.write_sequence(|writer| {
+			writer
+				.next()
+				.write_oid(&ObjectIdentifier::from_slice(&self.policy_qualifier_id));
+			writer.next().write_der(&self.qualifier);
+		});
+	}
 }
 
 /// Excerpt from [RFC5280 Section 4.2.1.14](https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.14)
@@ -1189,6 +1434,148 @@ mod tests {
 	use crate::DnValue;
 	#[cfg(feature = "crypto")]
 	use crate::KeyPair;
+
+	#[cfg(feature = "crypto")]
+	#[cfg(feature = "x509-parser")]
+	#[test]
+	fn test_certificate_policies_cert_serde() {
+		use crate::string::Ia5String;
+		use crate::{
+			CertificateParams, CertificatePolicies, PolicyInformation, PolicyQualifierInfo,
+		};
+
+		const OID_CPS_URI: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 2, 1];
+		const OID_USER_NOTICE: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 2, 2];
+
+		let params = CertificateParams {
+			subject_alt_names: vec![SanType::DnsName(Ia5String::try_from("localhost").unwrap())],
+			certificate_policies: CertificatePolicies::new(
+				false,
+				vec![
+					// anyPolicy
+					PolicyInformation::new_oid_only(vec![2, 5, 29, 32, 0]),
+					// extendedValidation
+					PolicyInformation::new_oid_only(vec![2, 23, 140, 1, 1]),
+					// domainValidated
+					PolicyInformation::new_oid_only(vec![2, 23, 140, 1, 2, 1]),
+					// organizationValidated
+					PolicyInformation::new_oid_only(vec![2, 23, 140, 1, 2, 2]),
+					// individualValidated
+					PolicyInformation::new_oid_only(vec![2, 23, 140, 1, 2, 3]),
+					// CpsUri
+					PolicyInformation::new_oid_qualifiers(
+						OID_CPS_URI.to_vec(),
+						vec![
+							PolicyQualifierInfo {
+								policy_qualifier_id: OID_CPS_URI.to_vec(),
+								qualifier: yasna::construct_der(|writer| {
+									writer.write_ia5_string("https://cps.example.org")
+								}),
+							},
+							PolicyQualifierInfo {
+								policy_qualifier_id: OID_CPS_URI.to_vec(),
+								qualifier: yasna::construct_der(|writer| {
+									writer.write_ia5_string("https://cps.example.com")
+								}),
+							},
+						],
+					),
+					// UserNotice without notice_ref, explicit_text only
+					PolicyInformation::new_oid_qualifiers(
+						OID_USER_NOTICE.to_vec(),
+						vec![PolicyQualifierInfo {
+							policy_qualifier_id: OID_USER_NOTICE.to_vec(),
+							qualifier: yasna::construct_der(|writer| {
+								writer.write_sequence(|writer| {
+									writer.next().write_utf8_string("Some explicit_text")
+								})
+							}),
+						}],
+					),
+				],
+			)
+			.expect("Constructing a well-formed extension shouldn't fail"),
+			..Default::default()
+		};
+
+		let key_pair = KeyPair::generate().unwrap();
+		let cert = params.self_signed(&key_pair).unwrap();
+
+		let parsed_params = CertificateParams::from_ca_cert_der(cert.der())
+			.expect("We should be able to parse the certificate we just created");
+		assert_eq!(
+			params.certificate_policies,
+			parsed_params.certificate_policies
+		);
+	}
+
+	#[test]
+	fn test_policy_information_new_oid_only_der() {
+		use crate::PolicyInformation;
+		const EXPECTED_DER: &[u8] = &[0x30, 0x05, 0x06, 0x03, 0x01, 0x02, 0x03];
+		let policy_information_der = yasna::construct_der(|writer| {
+			PolicyInformation::new_oid_only(vec![0, 1, 2, 3]).encode_der(writer);
+		});
+		assert_eq!(EXPECTED_DER, &policy_information_der)
+	}
+
+	#[test]
+	fn test_policy_information_new_oid_qualifiers_der() {
+		use crate::{PolicyInformation, PolicyQualifierInfo};
+		const EXPECTED_DER: &[u8] = &[
+			0x30, 0x2C, 0x06, 0x03, 0x2A, 0x03, 0x04, 0x30, 0x25, 0x30, 0x12, 0x06, 0x04, 0x2A,
+			0x03, 0x04, 0x00, 0x0C, 0x0A, 0x55, 0x54, 0x46, 0x38, 0x53, 0x74, 0x72, 0x69, 0x6E,
+			0x67, 0x30, 0x0F, 0x06, 0x04, 0x2A, 0x03, 0x04, 0x01, 0x12, 0x07, 0x31, 0x32, 0x38,
+			0x20, 0x32, 0x35, 0x36,
+		];
+		let policy_information_der = yasna::construct_der(|writer| {
+			PolicyInformation::new_oid_qualifiers(
+				vec![1, 2, 3, 4],
+				vec![
+					PolicyQualifierInfo {
+						policy_qualifier_id: vec![1, 2, 3, 4, 0],
+						qualifier: yasna::construct_der(|writer| {
+							writer.write_utf8string("UTF8String")
+						}),
+					},
+					PolicyQualifierInfo {
+						policy_qualifier_id: vec![1, 2, 3, 4, 1],
+						qualifier: yasna::construct_der(|writer| {
+							writer.write_numeric_string("128 256")
+						}),
+					},
+				],
+			)
+			.encode_der(writer);
+		});
+		assert_eq!(EXPECTED_DER, &policy_information_der)
+	}
+
+	#[test]
+	fn test_policy_info_empty() {
+		use crate::CertificatePolicies;
+		let none = CertificatePolicies::new(false, vec![])
+			.expect("Empty CertificatePolicies don't cause an error but must return None");
+		assert!(none.is_none());
+	}
+
+	#[test]
+	fn test_policy_information_non_unique() {
+		use crate::{CertificatePolicies, PolicyInformation};
+		let duplicate_policy_information_error = CertificatePolicies::new(
+			false,
+			vec![
+				PolicyInformation::new_oid_only(vec![2, 5, 29, 32, 0]),
+				PolicyInformation::new_oid_only(vec![2, 5, 29, 32, 0]),
+			],
+		)
+		.expect_err("Testing duplicate OID rejection");
+
+		assert_eq!(
+			format!("{}", duplicate_policy_information_error),
+			"Encountered duplicate PolicyInformationOID: 2.5.29.32.0"
+		)
+	}
 
 	#[cfg(feature = "crypto")]
 	#[test]
