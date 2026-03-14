@@ -170,8 +170,8 @@ impl CertificateParams {
 			.derive(key.subject_public_key_info())
 	}
 
-	#[cfg(all(test, feature = "x509-parser"))]
-	pub(crate) fn from_ca_cert_der(ca_cert: &CertificateDer<'_>) -> Result<Self, Error> {
+	#[cfg(feature = "x509-parser")]
+	pub fn from_ca_cert_der(ca_cert: &CertificateDer<'_>) -> Result<Self, Error> {
 		let (_remainder, x509) = x509_parser::parse_x509_certificate(ca_cert)
 			.map_err(|_| Error::CouldNotParseCertificate)?;
 
@@ -678,7 +678,7 @@ pub struct CertificatePolicies {
 }
 
 impl CertificatePolicies {
-	#[cfg(all(test, feature = "x509-parser"))]
+	#[cfg(feature = "x509-parser")]
 	fn from_x509(
 		x509: &x509_parser::certificate::X509Certificate<'_>,
 	) -> Result<Option<Self>, Error> {
@@ -803,7 +803,7 @@ impl PolicyInformation {
 	}
 }
 
-#[cfg(all(test, feature = "x509-parser"))]
+#[cfg(feature = "x509-parser")]
 impl PolicyInformation {
 	fn from_x509(value: x509_parser::extensions::PolicyInformation) -> Result<Self, Error> {
 		let mut policy_identifier = Vec::new();
@@ -849,7 +849,7 @@ pub struct PolicyQualifierInfo {
 	pub qualifier: Vec<u8>,
 }
 
-#[cfg(all(test, feature = "x509-parser"))]
+#[cfg(feature = "x509-parser")]
 impl PolicyQualifierInfo {
 	fn from_x509(value: x509_parser::extensions::PolicyQualifierInfo<'_>) -> Result<Self, Error> {
 		let mut oid = Vec::new();
@@ -908,7 +908,7 @@ pub struct InhibitAnyPolicy {
 	pub skip_certs: u32,
 }
 
-#[cfg(all(test, feature = "x509-parser"))]
+#[cfg(feature = "x509-parser")]
 impl InhibitAnyPolicy {
 	fn from_x509(
 		x509: &x509_parser::certificate::X509Certificate<'_>,
@@ -1079,7 +1079,7 @@ pub enum ExtendedKeyUsagePurpose {
 }
 
 impl ExtendedKeyUsagePurpose {
-	#[cfg(all(test, feature = "x509-parser"))]
+	#[cfg(feature = "x509-parser")]
 	fn from_x509(x509: &x509_parser::certificate::X509Certificate<'_>) -> Result<Vec<Self>, Error> {
 		let extended_key_usage = x509
 			.extended_key_usage()
@@ -1144,7 +1144,7 @@ pub struct NameConstraints {
 }
 
 impl NameConstraints {
-	#[cfg(all(test, feature = "x509-parser"))]
+	#[cfg(feature = "x509-parser")]
 	fn from_x509(
 		x509: &x509_parser::certificate::X509Certificate<'_>,
 	) -> Result<Option<Self>, Error> {
@@ -1197,7 +1197,7 @@ pub enum GeneralSubtree {
 }
 
 impl GeneralSubtree {
-	#[cfg(all(test, feature = "x509-parser"))]
+	#[cfg(feature = "x509-parser")]
 	fn from_x509(
 		subtrees: &[x509_parser::extensions::GeneralSubtree<'_>],
 	) -> Result<Vec<Self>, Error> {
@@ -1369,7 +1369,7 @@ pub enum IsCa {
 }
 
 impl IsCa {
-	#[cfg(all(test, feature = "x509-parser"))]
+	#[cfg(feature = "x509-parser")]
 	fn from_x509(x509: &x509_parser::certificate::X509Certificate<'_>) -> Result<Self, Error> {
 		use x509_parser::extensions::BasicConstraints as B;
 
