@@ -118,7 +118,7 @@ impl CertificateParams {
 			.into()
 			.into_iter()
 			.map(|s| {
-				Ok(match IpAddr::from_str(&s) {
+				Ok::<SanType, Error>(match IpAddr::from_str(&s) {
 					Ok(ip) => SanType::IpAddress(ip),
 					Err(_) => SanType::DnsName(s.try_into()?),
 				})
@@ -747,8 +747,11 @@ impl CertificatePolicies {
 
 impl CertificatePolicies {
 	/// Create a new [`CertificatePolicies`] extension.
-	/// Returns [`None`] when `policies` is empty and [`Error::DuplicatePolicyInformation`] when policies are not unique
-	pub fn new(criticality: bool, policies: Vec<PolicyInformation>) -> Result<Option<Self>, Error> {
+	/// Returns [`None`] when `policies` is empty and [`crate::error::DuplicatePolicyInformation`] when policies are not unique
+	pub fn new(
+		criticality: bool,
+		policies: Vec<PolicyInformation>,
+	) -> Result<Option<Self>, crate::error::DuplicatePolicyInformation> {
 		if policies.is_empty() {
 			return Ok(None);
 		}
@@ -756,7 +759,7 @@ impl CertificatePolicies {
 		let mut unique_ids: HashSet<&[u64]> = HashSet::with_capacity(policies.len());
 		for policy in &policies {
 			if !unique_ids.insert(&policy.policy_identifier) {
-				return Err(Error::DuplicatePolicyInformation(
+				return Err(crate::error::DuplicatePolicyInformation(
 					policy.policy_identifier.clone(),
 				));
 			}

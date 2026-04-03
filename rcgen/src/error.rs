@@ -52,7 +52,7 @@ pub enum Error {
 	#[cfg(feature = "x509-parser")]
 	X509(String),
 	/// A certificate policy OID MUST NOT appear more than once in a certificate policies extension.
-	DuplicatePolicyInformation(Vec<u64>),
+	DuplicatePolicyInformation(DuplicatePolicyInformation),
 }
 
 impl fmt::Display for Error {
@@ -103,20 +103,39 @@ impl fmt::Display for Error {
 			MissingSerialNumber => write!(f, "A serial number must be specified")?,
 			#[cfg(feature = "x509-parser")]
 			X509(e) => write!(f, "X.509 parsing error: {e}")?,
-			DuplicatePolicyInformation(oid) => write!(
-				f,
-				"Encountered duplicate PolicyInformationOID: {}",
-				oid.iter()
-					.map(|&node| node.to_string())
-					.collect::<Vec<String>>()
-					.join("."),
-			)?,
+			DuplicatePolicyInformation(e) => write!(f, "{e}")?,
 		};
 		Ok(())
 	}
 }
 
 impl std::error::Error for Error {}
+
+/// A certificate policy OID MUST NOT appear more than once in a certificate policies extension.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuplicatePolicyInformation(pub Vec<u64>);
+
+impl fmt::Display for DuplicatePolicyInformation {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(
+			f,
+			"Encountered duplicate PolicyInformationOID: {}",
+			self.0
+				.iter()
+				.map(|&node| node.to_string())
+				.collect::<Vec<String>>()
+				.join("."),
+		)
+	}
+}
+
+impl std::error::Error for DuplicatePolicyInformation {}
+
+impl From<DuplicatePolicyInformation> for Error {
+	fn from(value: DuplicatePolicyInformation) -> Self {
+		Error::DuplicatePolicyInformation(value)
+	}
+}
 
 /// Invalid ASN.1 string type
 #[derive(Clone, Debug, PartialEq, Eq)]

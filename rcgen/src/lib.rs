@@ -52,7 +52,7 @@ pub use crl::{
 	CrlIssuingDistributionPoint, CrlScope, RevocationReason, RevokedCertParams,
 };
 pub use csr::{CertificateSigningRequest, CertificateSigningRequestParams, PublicKey};
-pub use error::{Error, InvalidAsn1String};
+pub use error::{DuplicatePolicyInformation, Error, InvalidAsn1String};
 #[cfg(feature = "crypto")]
 pub use key_pair::KeyPair;
 #[cfg(all(feature = "crypto", feature = "aws_lc_rs"))]
